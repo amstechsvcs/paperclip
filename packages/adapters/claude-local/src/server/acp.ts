@@ -55,7 +55,7 @@ import {
 } from "./probe-diagnostics.js";
 import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
 import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
-import { detectClaudeLoginRequired, extractClaudeRetryNotBefore, isClaudeProviderQuotaError, parseClaudeStreamJson } from "./parse.js";
+import { detectClaudeContextCompaction, detectClaudeLoginRequired, extractClaudeRetryNotBefore, isClaudeProviderQuotaError, parseClaudeStreamJson } from "./parse.js";
 import { buildClaudeProbePermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
 import {
@@ -369,6 +369,13 @@ export function classifyClaudeTerminalSessionFailure(
   failure: AcpxTerminalSessionFailure,
   now: Date,
 ): AcpxTerminalFailureClassification | null {
+  // A compaction death outranks every category, including the typed access
+  // category: a run that died summarizing an oversized prompt is not a
+  // sign-in failure even when its diagnostic text repeats auth words.
+  const surface = { errorMessage: [failure.title, failure.details].filter(Boolean).join("\n") };
+  if (detectClaudeContextCompaction(surface)) {
+    return { errorCode: "context_compaction_failed" };
+  }
   // Claude's typed AIR access category is emitted for auth_required. This is
   // a provider signal, including its generic fallback, not a tool permission
   // error inferred from text. Keep it on the existing sign-in recovery path.
@@ -376,7 +383,6 @@ export function classifyClaudeTerminalSessionFailure(
   // `limit` also includes context, turn, rate and configured budget limits.
   // Only the provider's quota wording qualifies for a quota wait.
   if (failure.category !== "limit") return null;
-  const surface = { errorMessage: [failure.title, failure.details].filter(Boolean).join("\n") };
   // claude-agent-acp uses this exact quota_exhausted fallback when no provider
   // title is available. It does not match the CLI's usage-limit wording.
   const isQuotaFallback = failure.title === "The Claude account has no available quota.";

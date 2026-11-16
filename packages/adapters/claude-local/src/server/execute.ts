@@ -72,6 +72,7 @@ import {
   claudeModelReceipts,
   parseClaudeStreamJson, createClaudeStreamParser,
   describeClaudeFailure,
+  detectClaudeContextCompaction,
   detectClaudeLoginRequired,
   extractClaudeRetryNotBefore,
   isClaudeMaxTurnsResult,
@@ -1102,6 +1103,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // surfaces the typed `duplex_channel_lost` code before any provider
           // classification, so the CLI lane and the ACP lane report it alike.
           ? proc.errorCode
+          // A compaction death outranks the login prompt: the legacy
+          // login-prompt markers match any output line, so a run that died
+          // while summarizing an oversized prompt would otherwise be sealed as
+          // claude_auth_required. See detectClaudeContextCompaction.
+          : detectClaudeContextCompaction({
+            parsed: null,
+            stdout: proc.stdout,
+            stderr: proc.stderr,
+            errorMessage: fallbackErrorMessage,
+          })
+          ? "context_compaction_failed"
           : loginMeta.requiresLogin
           ? "claude_auth_required"
           : isClaudeModelNotFoundError({
@@ -1245,11 +1257,27 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             errorMessage,
           })
         : null;
+      const contextCompactionFailed =
+        failed &&
+        !clearSessionForMaxTurns &&
+        !poisonedPreviousMessageId &&
+        detectClaudeContextCompaction({
+          parsed,
+          stdout: proc.stdout,
+          stderr: proc.stderr,
+          errorMessage,
+        });
       const resolvedErrorCode = proc.errorCode
         // Forward the transport-level error code from the run-disposition seam
         // first. A lost duplex control channel surfaces the typed
         // `duplex_channel_lost` code before any provider classification.
         ? proc.errorCode
+        // A compaction death outranks the login prompt: the legacy
+        // login-prompt markers match any output line, so a run that died while
+        // summarizing an oversized prompt would otherwise be sealed as
+        // claude_auth_required. See detectClaudeContextCompaction.
+        : contextCompactionFailed
+        ? "context_compaction_failed"
         : loginMeta.requiresLogin
         ? "claude_auth_required"
         // Structured CLI signals outrank the model-not-found detector, which

@@ -3597,6 +3597,22 @@ function describeErrorDiagnostics(err: unknown): {
   return { errorName, acpCode, causeMessage, retryable, stackPreview };
 }
 
+// The context-compaction markers. A run that dies because the prompt outgrew
+// the model context and the automatic compaction (summarization) itself
+// failed carries one of these phrases in the provider error. The match runs
+// before any auth heuristic: an oversized-prompt death whose diagnostic text
+// happens to repeat an auth word is a compaction death, not a sign-in
+// failure.
+const ACPX_CONTEXT_COMPACTION_RE =
+  /(?:prompt\s+is\s+too\s+long|automatic\s+compaction\s+failed|summarization\s+produced\s+empty\s+response)/i;
+
+// Structured auth signals only. A typed ACP auth code or an error class whose
+// name names authentication proves the provider rejected the credential;
+// message prose that merely contains "auth"/"login"/"credential" (an agent
+// narrating a login flow, a tool grepping auth source) does not.
+const ACPX_STRUCTURED_AUTH_ERROR_NAME_RE =
+  /(?:^|[^a-z])(?:auth(?:entication|orization)?|login|credential|unauthorized|forbidden)(?:required|failed|error|exception|denied)?error(?:$|[^a-z])/i;
+
 function classifyError(
   err: unknown,
   phase?: AcpxExecutionPhase,
@@ -3629,9 +3645,25 @@ function classifyError(
       errorMeta: { category: "runtime", ...baseMeta },
     };
   }
-  const lower = message.toLowerCase();
-  const authLike = lower.includes("auth") || lower.includes("login") || lower.includes("credential");
-  if (authLike) {
+  if (ACPX_CONTEXT_COMPACTION_RE.test(message) || (causeMessage && ACPX_CONTEXT_COMPACTION_RE.test(causeMessage))) {
+    return {
+      errorCode: "context_compaction_failed",
+      errorMeta: { category: "runtime", ...baseMeta },
+    };
+  }
+  // Auth requires a structural signal: a typed ACP auth code or an error
+  // class whose own name names authentication. Message text is untrusted —
+  // the previous substring heuristic sealed ordinary phase/protocol failures
+  // whose prose mentioned auth as acpx_auth_required. A phase or protocol
+  // error without a structural auth signal falls through to the phase and
+  // protocol classifiers below. An Error subclass without an own `name` still
+  // reports `Error`, so the class name is checked alongside it.
+  const className = err instanceof Error ? err.constructor?.name ?? "" : "";
+  const structuredAuthLike =
+    (acpCode ? /auth/i.test(acpCode) : false) ||
+    ACPX_STRUCTURED_AUTH_ERROR_NAME_RE.test(errorName) ||
+    ACPX_STRUCTURED_AUTH_ERROR_NAME_RE.test(className);
+  if (structuredAuthLike) {
     return {
       errorCode: "acpx_auth_required",
       errorMeta: { category: "auth", ...baseMeta },

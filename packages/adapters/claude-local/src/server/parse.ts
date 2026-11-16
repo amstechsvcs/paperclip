@@ -18,6 +18,15 @@ const CLAUDE_LOGIN_PROMPT_RE =
 // terminal result fields of a failed run. See detectClaudeLoginRequired.
 const CLAUDE_AUTH_TOKEN_FAILURE_RE =
   /(?:authentication[_\s-](?:failed|error)|failed\s+to\s+authenticate|invalid\s+bearer\s+token|(?:invalid|expired|revoked)[\s\S]{0,40}(?:bearer|oauth|access)\s+token|(?:bearer|oauth|access)\s+token[\s\S]{0,40}(?:is\s+)?(?:invalid|expired|revoked))/i;
+
+// The context-compaction markers. A run that dies because the prompt outgrew
+// the model context and the automatic compaction (summarization) itself failed
+// carries one of these phrases in the terminal result. An assistant or model
+// event can print the same words as ordinary prose, so the detector matches
+// them only against the trusted terminal fields of a failed run — never the
+// raw stdout. See detectClaudeContextCompaction.
+const CLAUDE_CONTEXT_COMPACTION_RE =
+  /(?:prompt\s+is\s+too\s+long|automatic\s+compaction\s+failed|summarization\s+produced\s+empty\s+response)/i;
 const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 
 const CLAUDE_TRANSIENT_UPSTREAM_RE =
@@ -269,6 +278,48 @@ export function detectClaudeLoginRequired(input: {
     requiresLogin: loginPrompt || tokenFailure,
     loginUrl: extractClaudeLoginUrl([input.stdout, input.stderr].join("\n")),
   };
+}
+
+// Collect the compaction evidence from trusted terminal sources only: the
+// parsed terminal result fields of the run plus the process stderr. The raw
+// stdout is untrusted — an assistant event quoting a compaction phrase must
+// never classify the run — so on the unparsed path each stdout line only
+// contributes when it parses as a terminal `result` event whose fields carry
+// the phrase.
+function collectClaudeCompactionEvidence(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): string {
+  const parsed = input.parsed ?? null;
+  const parts = [
+    input.errorMessage ?? "",
+    input.stderr ?? "",
+    parsed ? collectClaudeTerminalText(parsed) : "",
+  ];
+  if (!parsed && input.stdout) {
+    for (const line of input.stdout.split(/\r?\n/)) {
+      const event = parseJson(line.trim());
+      if (!event || asString(event.type, "") !== "result") continue;
+      parts.push(collectClaudeTerminalText(event));
+    }
+  }
+  return parts.join("\n");
+}
+
+// Report whether the run died because automatic context compaction failed.
+// Like the token-failure markers, the compaction markers apply only to the
+// trusted terminal fields; the raw stdout never classifies a run.
+export function detectClaudeContextCompaction(input: {
+  parsed?: Record<string, unknown> | null;
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): boolean {
+  const evidence = collectClaudeCompactionEvidence(input);
+  if (!evidence) return false;
+  return CLAUDE_CONTEXT_COMPACTION_RE.test(evidence);
 }
 
 export function describeClaudeFailure(parsed: Record<string, unknown>): string | null {

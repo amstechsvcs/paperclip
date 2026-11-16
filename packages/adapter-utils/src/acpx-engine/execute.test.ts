@@ -439,10 +439,156 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(result.sessionParams?.sessionKey).toBe(`paperclip:company-1:agent-1:default:${result.sessionParams?.configFingerprint}`);
   });
 
+  it.each([
+    [
+      "context_compaction_failed",
+      new Error("Prompt is too long · automatic compaction failed: summarization produced empty response"),
+    ],
+    [
+      "context_compaction_failed",
+      new Error("turn failed: prompt is too long (see cause)", { cause: new Error("automatic compaction failed") }),
+    ],
+  ])("classifies a %s turn death ahead of every auth heuristic", async (expectedCode, error) => {
+    const root = await makeTempRoot();
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ...buildRuntime(),
+        startTurn: () => ({
+          events: (async function* () {
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          // A rejected turn result is the JSON-RPC failure path the real ACP
+          // request takes; the classified code comes from classifyError.
+          result: Promise.reject(error),
+          cancel: async () => {},
+        }),
+      }) as never,
+    });
+    const result = await execute({
+      runId: "compaction-death", agent: { id: "agent-1", companyId: "company-1" }, runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") },
+      context: {}, onLog: async () => {}, onMeta: async () => {},
+    } as never);
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe(expectedCode);
+    // The failed phase is the turn; the code must not leak into a phase code.
+    expect(result.errorMeta).toMatchObject({ phase: "turn" });
+  });
+
+  it.each([
+    ["auth process crashed with status 7"],
+    ["failed to read login state"],
+    ["invalid credential file for provider"],
+  ])("keeps a generic phase failure with auth prose out of auth classification: %s", async (message) => {
+    const root = await makeTempRoot();
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ...buildRuntime(),
+        startTurn: () => ({
+          events: (async function* () {
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.reject(new Error(message)),
+          cancel: async () => {},
+        }),
+      }) as never,
+    });
+    const result = await execute({
+      runId: "auth-prose", agent: { id: "agent-1", companyId: "company-1" }, runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") },
+      context: {}, onLog: async () => {}, onMeta: async () => {},
+    } as never);
+    expect(result.exitCode).toBe(1);
+    // No structural auth signal, so the phase classifier owns the failure.
+    expect(result.errorCode).toBe("acpx_turn_failed");
+    expect(result.errorMeta).not.toMatchObject({ category: "auth" });
+  });
+
+  it("classifies auth only from a structural signal", async () => {
+    const root = await makeTempRoot();
+    class AcpxAuthRequiredError extends Error {
+      code = "ACP_AUTH_REQUIRED";
+    }
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ...buildRuntime(),
+        startTurn: () => ({
+          events: (async function* () {
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.reject(new AcpxAuthRequiredError("session rejected")),
+          cancel: async () => {},
+        }),
+      }) as never,
+    });
+    const result = await execute({
+      runId: "structured-auth", agent: { id: "agent-1", companyId: "company-1" }, runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") },
+      context: {}, onLog: async () => {}, onMeta: async () => {},
+    } as never);
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("acpx_auth_required");
+    expect(result.errorMeta).toMatchObject({ category: "auth", acpCode: "ACP_AUTH_REQUIRED" });
+  });
+
+  it("classifies auth from a typed auth error class name", async () => {
+    const root = await makeTempRoot();
+    class AuthenticationRequiredError extends Error {}
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ...buildRuntime(),
+        startTurn: () => ({
+          events: (async function* () {
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.reject(new AuthenticationRequiredError("credential expired")),
+          cancel: async () => {},
+        }),
+      }) as never,
+    });
+    const result = await execute({
+      runId: "typed-auth-class", agent: { id: "agent-1", companyId: "company-1" }, runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") },
+      context: {}, onLog: async () => {}, onMeta: async () => {},
+    } as never);
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("acpx_auth_required");
+    expect(result.errorMeta).toMatchObject({ category: "auth" });
+  });
+
+  it("classifies compaction ahead of auth when the diagnostic text repeats auth words", async () => {
+    const root = await makeTempRoot();
+    class AcpxAuthRequiredError extends Error {
+      code = "ACP_AUTH_REQUIRED";
+    }
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () => ({
+        ...buildRuntime(),
+        startTurn: () => ({
+          events: (async function* () {
+            yield { type: "done", stopReason: "end_turn" };
+          })(),
+          result: Promise.reject(
+            new AcpxAuthRequiredError(
+              "Prompt is too long · automatic compaction failed: summarization produced empty response",
+            ),
+          ),
+          cancel: async () => {},
+        }),
+      }) as never,
+    });
+    const result = await execute({
+      runId: "compaction-over-auth", agent: { id: "agent-1", companyId: "company-1" }, runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state") },
+      context: {}, onLog: async () => {}, onMeta: async () => {},
+    } as never);
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("context_compaction_failed");
+  });
+
   it.each(["agentCommand", "cwd", "model", "thinkingEffort", "mode", "fastMode"] as const)(
     "folds configured %s into the engine session fingerprint",
-    async (dimension) => {
-      const root = await makeTempRoot();
+    async (dimension) => {      const root = await makeTempRoot();
       const config = {
         agent: dimension === "fastMode" ? "codex" : "custom", agentCommand: "node ./fake-acp.js",
         stateDir: path.join(root, "state"), cwd: root,
