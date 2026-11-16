@@ -62,6 +62,12 @@ export function humanizeSystemNotice(input: {
       tone: presentationTone ?? "warning",
     };
   }
+  if (code === "context_compaction_failed") {
+    return {
+      title: "Task stopped — context compaction failed",
+      tone: presentationTone ?? "warning",
+    };
+  }
   if (code === "configuration_incomplete" || body.includes("secret/env bindings are missing")) {
     return {
       title: "Task paused — a secret/config binding is missing",

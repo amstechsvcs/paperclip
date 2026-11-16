@@ -26,6 +26,19 @@ describe("humanizeSystemNotice", () => {
     expect(result.tone).toBe("warning");
   });
 
+  it("classifies context_compaction_failed without login language", () => {
+    const result = humanizeSystemNotice({
+      body:
+        "Paperclip automatically retried continuation for this assigned `in_progress` issue during terminal run " +
+        "recovery, but it still has no live execution path. Latest retry failure: `context_compaction_failed` - " +
+        "Prompt is too long · automatic compaction failed. Moving it to `blocked` so it is visible for intervention.",
+    });
+    expect(result.title).toBe("Task stopped — context compaction failed");
+    expect(result.tone).toBe("warning");
+    expect(result.title.toLowerCase()).not.toContain("login");
+    expect(result.title.toLowerCase()).not.toContain("re-auth");
+  });
+
   it("classifies configuration_incomplete failures", () => {
     const result = humanizeSystemNotice({
       body:
