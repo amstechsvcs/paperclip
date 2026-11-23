@@ -55,7 +55,9 @@ BEGIN LOOP
   WITH batch AS MATERIALIZED (SELECT id FROM execution_workspaces
       WHERE id > cursor_id AND metadata->'_issuePrivacySources' ?| ARRAY(
         SELECT key FROM jsonb_object_keys(coalesce(metadata->'_issuePrivacySources', '{}'::jsonb)) AS k(key)
-        WHERE NOT EXISTS (SELECT 1 FROM issues WHERE id = NULLIF(key, '')::uuid AND company_id = execution_workspaces.company_id))
+        WHERE key ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+          AND NOT EXISTS (SELECT 1 FROM issues WHERE id = key::uuid
+            AND company_id = execution_workspaces.company_id))
       ORDER BY id LIMIT 1000),
   changed AS (UPDATE execution_workspaces w SET metadata = metadata FROM batch b WHERE w.id = b.id RETURNING w.id)
   SELECT id INTO next_id FROM changed ORDER BY id DESC LIMIT 1;
