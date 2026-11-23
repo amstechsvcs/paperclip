@@ -146,6 +146,24 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await read()).toHaveLength(0);
   });
 
+  it("tolerates deleted-source keys and still denies live unreadable sources", async () => {
+    const [deleted] = await db.insert(issues).values({ companyId, title: "Soon deleted" }).returning();
+    await retain(deleted.id);
+    expect(await read()).toHaveLength(1);
+    await db.delete(issues).where(eq(issues.id, deleted.id));
+    expect(await read()).toHaveLength(1);
+    // Live but unreadable for this actor: the privacy invariant still denies.
+    const [foreignReadable] = await db.insert(issues).values({ companyId, title: "Foreign readable", visibility: "private", privacyRootIssueId: sourceId }).returning();
+    await db.insert(issueAccessGrants).values({ issueId: sourceId, subjectType: "user", subjectId: userId, source: "explicit" });
+    try {
+      await retain(foreignReadable.id);
+      expect(await read()).toHaveLength(0);
+    } finally {
+      await db.delete(issueAccessGrants).where(and(eq(issueAccessGrants.issueId, sourceId), eq(issueAccessGrants.subjectId, userId)));
+      await db.delete(issues).where(eq(issues.id, foreignReadable.id));
+    }
+  });
+
   it("requires both principals and rechecks revoked grants for retained private files", async () => {
     await retain(sourceId);
     await db.update(issues).set({ visibility: "private", privacyRootIssueId: sourceId }).where(eq(issues.id, sourceId));

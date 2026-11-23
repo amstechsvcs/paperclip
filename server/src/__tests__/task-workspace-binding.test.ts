@@ -799,6 +799,29 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(workspace?.metadata).toMatchObject({ _issuePrivacySources: { [f.issueId]: true, [secondIssueId]: true } });
   });
 
+  it("keeps a shared workspace readable after deleting one of its bound tasks", async () => {
+    vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
+    const f = await fixture(), svc = executionWorkspaceService(db), tasks = issueService(db);
+    try {
+      const [secondIssue] = await db.insert(issues).values({ companyId: f.companyId, title: "Surviving task" }).returning();
+      await svc.bindTaskWorkspace(f.companyId, f.issueId, f.workspaceId);
+      await svc.bindTaskWorkspace(f.companyId, secondIssue.id, f.workspaceId);
+      const actor = { type: "board" as const, source: "local_implicit" as const, userId: "local-board" };
+      await expect(assertExecutionWorkspaceRecordAccess(db, actor, f.companyId, f.workspaceId)).resolves.toBeUndefined();
+      expect(await tasks.remove(f.issueId)).toMatchObject({ id: f.issueId });
+      const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+      expect(Object.keys(workspace?.metadata?._issuePrivacySources ?? {})).toEqual([secondIssue.id]);
+      expect(workspace?.sourceIssueId).toBeNull();
+      await expect(assertExecutionWorkspaceRecordAccess(db, actor, f.companyId, f.workspaceId)).resolves.toBeUndefined();
+      expect(await canActorReadExecutionWorkspace(db, actor, f.workspaceId)).toBe(true);
+      // A new task can still inherit the workspace after the deletion.
+      const [heir] = await db.insert(issues).values({ companyId: f.companyId, title: "Heir task" }).returning();
+      await svc.bindTaskWorkspace(f.companyId, heir.id, f.workspaceId);
+      const [rebound] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+      expect(rebound?.metadata?._issuePrivacySources).toMatchObject({ [heir.id]: true, [secondIssue.id]: true });
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it.each(["creation", "selection"] as const)("retains private writers after an existing workspace is installed by %s and then detached", async (installation) => {
     vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
     try {

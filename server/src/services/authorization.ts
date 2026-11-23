@@ -3112,8 +3112,10 @@ export async function executionWorkspaceReadSqlCondition(db: Db | DbTransaction,
       select 1 from ${projects} where ${projects.id} = ${executionWorkspaces.projectId}
         and ${projects.companyId} = ${executionWorkspaces.companyId} and ${projectCondition}))
     and not exists (select 1 from jsonb_object_keys(coalesce(${executionWorkspaces.metadata}->'_issuePrivacySources', '{}'::jsonb)) source(id)
-      where not exists (select 1 from ${issues} where ${issues.id} = ${canonicalExecutionUuid(sql`source.id`)}
-        and ${issues.companyId} = ${executionWorkspaces.companyId} and ${issueCondition}))
+      where source.id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        and exists (select 1 from ${issues} where ${issues.id} = ${canonicalExecutionUuid(sql`source.id`)}
+          and ${issues.companyId} = ${executionWorkspaces.companyId}
+          and not ${issueCondition}))
     and not exists (select 1 from ${issues}
       where ${issues.companyId} = ${executionWorkspaces.companyId}
         and (${issues.executionWorkspaceId} = ${executionWorkspaces.id} or ${issues.id} = ${executionWorkspaces.sourceIssueId})
