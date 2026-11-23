@@ -418,7 +418,11 @@ describe("private task production review", () => {
     await db.update(executionWorkspaces).set({ sourceIssueId: null, metadata: {} }).where(eq(executionWorkspaces.id, workspace.id));
     expect(await canActorReadExecutionWorkspace(db, f.actor(f.outsider), workspace.id)).toBe(false);
     await db.delete(issues).where(eq(issues.id, task.id));
-    expect(await canActorReadExecutionWorkspace(db, f.actor(f.outsider), workspace.id)).toBe(false);
+    // PRO-1063a: the deleted task is history, not a live unreadable source. The
+    // AFTER DELETE trigger strips its key and the workspace stays readable.
+    const [sanitized] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id));
+    expect(Object.keys(sanitized?.metadata?._issuePrivacySources ?? {})).not.toContain(task.id);
+    expect(await canActorReadExecutionWorkspace(db, f.actor(f.outsider), workspace.id)).toBe(true);
   });
 
   it("keeps inline draft images owner-only until publication then follows the task grant", async () => {

@@ -136,14 +136,18 @@ const support = await getEmbeddedPostgresTestSupport();
     }
   });
 
-  it.each(["missing", "malformed", "uppercase", "foreign"])("denies a %s retained source without throwing a UUID parse error", async kind => {
+  it.each(["missing", "malformed", "uppercase", "foreign"] as const)("tolerates a %s retained source without throwing a UUID parse error", async kind => {
     const id = kind === "malformed" ? "not-a-uuid" : kind === "uppercase" ? sourceId.toUpperCase() : randomUUID();
     if (kind === "foreign") {
       const [foreign] = await db.insert(companies).values({ name: "Foreign", issuePrefix: "OTHER" }).returning();
       await db.insert(issues).values({ id, companyId: foreign.id, title: "Foreign source" });
     }
     await retain(id);
-    expect(await read()).toHaveLength(0);
+    // No live row in this company resolves the key: deleted/foreign history is
+    // tolerated, not denied (PRO-1063a). The workspace stays readable.
+    expect(await read()).toHaveLength(1);
+    await expect(assertExecutionWorkspaceRecordAccess(db,
+      { type: "board", source: "local_implicit", userId: "local-board" }, companyId, workspaceId)).resolves.toBeUndefined();
   });
 
   it("tolerates deleted-source keys and still denies live unreadable sources", async () => {
@@ -152,6 +156,18 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await read()).toHaveLength(1);
     await db.delete(issues).where(eq(issues.id, deleted.id));
     expect(await read()).toHaveLength(1);
+    // The AFTER DELETE trigger already stripped the key; assert that contract
+    // explicitly so the tolerance below is exercised, not shadowed by it.
+    const [stripped] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
+    expect(Object.keys(stripped?.metadata?._issuePrivacySources ?? {})).not.toContain(deleted.id);
+    // A key with no live row (never existed, or a corrupt write seeded through
+    // session_replication_role) must not block the workspace: surface 1.
+    const neverExisted = randomUUID();
+    await retain(neverExisted);
+    expect(await read()).toHaveLength(1);
+    // Surface 2: the record-access inventory tolerates the same orphan key.
+    await expect(assertExecutionWorkspaceRecordAccess(db,
+      { type: "board", source: "local_implicit", userId: "local-board" }, companyId, workspaceId)).resolves.toBeUndefined();
     // Live but unreadable for this actor: the privacy invariant still denies.
     const [foreignReadable] = await db.insert(issues).values({ companyId, title: "Foreign readable", visibility: "private", privacyRootIssueId: sourceId }).returning();
     await db.insert(issueAccessGrants).values({ issueId: sourceId, subjectType: "user", subjectId: userId, source: "explicit" });

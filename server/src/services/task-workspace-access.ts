@@ -111,11 +111,10 @@ export async function assertExecutionWorkspaceRecordAccess(
   )));
   const sourceIds = new Set(sources.map(source => source.id));
   // A retained key without a live row in this company is deleted history:
-  // tolerate it, matching executionWorkspaceReadSqlCondition. A live unreadable
-  // source still denies through the per-source decisions below.
-  if (retainedIssueIds.some(id => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id))) {
-    throw forbidden("Task workspace source is no longer accessible");
-  }
+  // tolerate it, matching executionWorkspaceReadSqlCondition — malformed keys
+  // can never resolve, so they are tolerated the same way instead of throwing.
+  // A live unreadable source still denies through the per-source decisions
+  // below.
   const access = accessService(db as Db);
   if (sources.length === 0 && !workspace.projectId) {
     const decision = await measureRunPhase("workspace.access.authorization", () => access.decide({ actor, action: "company_scope:read", resource: { type: "company", companyId } }));
